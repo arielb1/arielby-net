@@ -1,5 +1,5 @@
 nothing:
-	true # give up and build locally
+	true # give up and build locally -
 
 all:
 	gem install bundler jekyll
