@@ -1,5 +1,7 @@
+nothing:
+	true # give up and build locally
+
 all:
-	rbenv install 2.7.2
 	gem install bundler jekyll
 	cd blog && bundle exec jekyll build
 	rm -fr www

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.7.1 -->
+<title>PSA: How to safely check buffer sizes in C | Ariel Ben-Yehuda’s blog</title>
+<meta name="generator" content="Jekyll v4.2.1" />
+<meta property="og:title" content="PSA: How to safely check buffer sizes in C" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="A common task in C is checking whether some data fits in a buffer. Unfortunately, doing it can be quite tricky, as [http://lwn.net/Articles/278137/] shows. Going by the standard, the problem is that in C creating a pointer beyond the end of an array is undefined behaviour – which means the compiler can do whatever it wants – including sending your customers’ credit card numbers to Russia (actually that’s quite a probable outcome, because, as the link shows, the compiler may introduce a security bug, which will be exploited and result in the credit card numbers being sent)." />
+<meta property="og:description" content="A common task in C is checking whether some data fits in a buffer. Unfortunately, doing it can be quite tricky, as [http://lwn.net/Articles/278137/] shows. Going by the standard, the problem is that in C creating a pointer beyond the end of an array is undefined behaviour – which means the compiler can do whatever it wants – including sending your customers’ credit card numbers to Russia (actually that’s quite a probable outcome, because, as the link shows, the compiler may introduce a security bug, which will be exploited and result in the credit card numbers being sent)." />
+<link rel="canonical" href="/blog/update/2014/04/23/c-bufcheck.html" />
+<meta property="og:url" content="/blog/update/2014/04/23/c-bufcheck.html" />
+<meta property="og:site_name" content="Ariel Ben-Yehuda’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2014-04-23T21:13:36+03:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="PSA: How to safely check buffer sizes in C" />
+<script type="application/ld+json">
+{"@type":"BlogPosting","url":"/blog/update/2014/04/23/c-bufcheck.html","headline":"PSA: How to safely check buffer sizes in C","dateModified":"2014-04-23T21:13:36+03:00","datePublished":"2014-04-23T21:13:36+03:00","mainEntityOfPage":{"@type":"WebPage","@id":"/blog/update/2014/04/23/c-bufcheck.html"},"description":"A common task in C is checking whether some data fits in a buffer. Unfortunately, doing it can be quite tricky, as [http://lwn.net/Articles/278137/] shows. Going by the standard, the problem is that in C creating a pointer beyond the end of an array is undefined behaviour – which means the compiler can do whatever it wants – including sending your customers’ credit card numbers to Russia (actually that’s quite a probable outcome, because, as the link shows, the compiler may introduce a security bug, which will be exploited and result in the credit card numbers being sent).","@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/blog/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/blog/feed.xml" title="Ariel Ben-Yehuda's blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/blog/">Ariel Ben-Yehuda&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/blog/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">PSA: How to safely check buffer sizes in C</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2014-04-23T21:13:36+03:00" itemprop="datePublished">Apr 23, 2014
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>A common task in C is checking whether some data fits in a buffer. Unfortunately, doing it can be quite tricky, as [http://lwn.net/Articles/278137/] shows. Going by the standard, the problem is that in C creating a pointer beyond the end of an array is undefined behaviour – which means the compiler can do whatever it wants – including sending your customers’ credit card numbers to Russia (actually that’s quite a probable outcome, because, as the link shows, the compiler may introduce a security bug, which will be exploited and result in the credit card numbers being sent).</p>
+
+<p>First, I’ll like to say that C does allow you to create a pointer to exactly-the-end-of-an-array (say, if A is an array of length 5, then you can create a pointer to (the non-existent) A[5], as long as you don’t dereference it).</p>
+
+<p>The right thing to do is actually quite simple,</p>
+
+<p><code style="color: turquoise; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">size_t buffer_size = ...;
+char * buffer = malloc(buffer_size);
+if(!buffer) return NULL; // or something
+...
+unsigned int overhead = calculate_overhead_from_data();
+unsigned int alleged_size = ask_data_what_the_size_is();
+if(buffer_size &lt; overhead ||
+   buffer_size - overhead &lt; alleged_size)
+  fail();
+</code></p>
+
+<p>Or, say, when getting a packet:</p>
+
+<p><code style="color: blue; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">// assume packet_end is the actual end of the packet
+if(packet_end - p &lt; 2*sizeof(unsigned int)) fail();
+unsigned int len = read_uint(p);
+p += sizeof(unsigned int);
+﻿
+unsigned int another_field = read_uint(p);
+p += sizeof(unsigned int);
+﻿
+if(packet_end - p &lt; len) fail();
+DO_SOMETHING_WITH_REST_OF_PACKET
+</code></p>
+
+<p>The things you must NEVER do are this:</p>
+
+<p><code style="color: #800000; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">// CODE IS WRONG AND EVIL
+// DO NOT USE UNLESS YOU ARE INTENTIONALLY INTRODUCING A BACKDOOR
+// assume packet_end is the actual end of the packet
+if(packet_end - p &lt; 2*sizeof(unsigned int)) fail();
+unsigned int len = read_uint(p);
+p += sizeof(unsigned int);
+﻿
+</code>
+<code style="color: #ff0000; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">// WRONG!
+unsigned int another_field = read_uint(p);
+p += sizeof(unsigned int);
+if(p + len &gt; packet_end) fail();
+﻿
+</code>
+<code style="color: #ff6600; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">// ALSO WRONG!
+if(packet_end - p &lt; len + sizeof(unsigned int)) fail()
+﻿
+</code>
+<code style="color: #800000; display: block; font-family: monospace; white-space: pre;" class="language-plaintext highlighter-rouge">DO_SOMETHING_WITH_REST_OF_PACKET
+</code></p>
+
+<p>The code in red tests for overflow by first creating a pointer overflowing a buffer, which overflows a buffer and begets undefined behaviour, and then tries to check the length, but the check comes too late – the program’s behaviour is already undefined, and the compiler, knowing so, may remove the check.
+The code in orange is slightly less wrong – the check is actually well-defined, because unsigned integer addition is defined as addition modulo <code class="language-plaintext highlighter-rouge">256^sizeof(size_t)</code> – however, it checks the wrong thing, because if an attacker puts, say, <code class="language-plaintext highlighter-rouge">len=(size_t)-sizeof(unsigned int)</code>, then <code class="language-plaintext highlighter-rouge">len+sizeof(unsigned int) = -4+4 = 0</code>, and the check will succeed and copy a huge amount of data off the end of the buffer, causing problems. I repeat, the red and orange codes are evil – use the blue or turquoise code unless you are introducing a backdoor.</p>
+
+<p>Note that in these examples, <code class="language-plaintext highlighter-rouge">read_uint</code> is assumed to be a macro/function that reads <code class="language-plaintext highlighter-rouge">sizeof(unsigned int)=4</code> bytes from a <code class="language-plaintext highlighter-rouge">char*</code> as an unsigned integer (this isn’t the same as <em>(int</em>)packet, because of alignment and endianness issues) – there does not seem to be any standard here. Assuming data is big-endian (as in most network protocols), it can be defined as:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="kr">inline</span> <span class="kt">unsigned</span> <span class="kt">int</span> <span class="nf">read_uint</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span> <span class="n">p</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">r</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="k">for</span><span class="p">(</span><span class="kt">int</span> <span class="n">i</span><span class="o">=</span><span class="mi">0</span><span class="p">;</span><span class="n">i</span><span class="o">&lt;</span><span class="mi">4</span><span class="p">;</span><span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="c1">// casting because char is signed.</span>
+    <span class="n">r</span> <span class="o">=</span> <span class="p">((</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">p</span><span class="p">[</span><span class="n">i</span><span class="p">])</span> <span class="o">+</span> <span class="p">(</span><span class="n">r</span><span class="o">&lt;&lt;</span><span class="mi">8</span><span class="p">);</span>
+  <span class="k">return</span> <span class="n">r</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+
+  </div><a class="u-url" href="/blog/update/2014/04/23/c-bufcheck.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/blog/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Ariel Ben-Yehuda&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Ariel Ben-Yehuda&#39;s blog</li><li><a class="u-email" href="mailto:ariel.byd@gmail.com">ariel.byd@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/arielb1"><svg class="svg-icon"><use xlink:href="/blog/assets/minima-social-icons.svg#github"></use></svg> <span class="username">arielb1</span></a></li><li><a href="https://www.twitter.com/ArielBenYehuda"><svg class="svg-icon"><use xlink:href="/blog/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">ArielBenYehuda</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Random observations on programming, mathematics, and what&#39;s between them.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

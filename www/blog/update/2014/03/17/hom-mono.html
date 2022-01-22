@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.7.1 -->
+<title>Using Higher-Order Macros in C to implement Monomorphisation | Ariel Ben-Yehuda’s blog</title>
+<meta name="generator" content="Jekyll v4.2.1" />
+<meta property="og:title" content="Using Higher-Order Macros in C to implement Monomorphisation" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="One of C++s most-often-cited advantages (over any language) is it ability to monomorphise abstracted calls via templates – to reuse code without the overhead of indirection and virtual method calls." />
+<meta property="og:description" content="One of C++s most-often-cited advantages (over any language) is it ability to monomorphise abstracted calls via templates – to reuse code without the overhead of indirection and virtual method calls." />
+<link rel="canonical" href="/blog/update/2014/03/17/hom-mono.html" />
+<meta property="og:url" content="/blog/update/2014/03/17/hom-mono.html" />
+<meta property="og:site_name" content="Ariel Ben-Yehuda’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2014-03-17T20:13:36+02:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Using Higher-Order Macros in C to implement Monomorphisation" />
+<script type="application/ld+json">
+{"@type":"BlogPosting","url":"/blog/update/2014/03/17/hom-mono.html","headline":"Using Higher-Order Macros in C to implement Monomorphisation","dateModified":"2014-03-17T20:13:36+02:00","datePublished":"2014-03-17T20:13:36+02:00","mainEntityOfPage":{"@type":"WebPage","@id":"/blog/update/2014/03/17/hom-mono.html"},"description":"One of C++s most-often-cited advantages (over any language) is it ability to monomorphise abstracted calls via templates – to reuse code without the overhead of indirection and virtual method calls.","@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/blog/assets/main.css"><link type="application/atom+xml" rel="alternate" href="/blog/feed.xml" title="Ariel Ben-Yehuda's blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/blog/">Ariel Ben-Yehuda&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/blog/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Using Higher-Order Macros in C to implement Monomorphisation</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2014-03-17T20:13:36+02:00" itemprop="datePublished">Mar 17, 2014
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <p>One of C++s most-often-cited advantages (over any language) is it ability to monomorphise abstracted calls via templates – to reuse code without the overhead of indirection and virtual method calls.</p>
+
+<p>As a part of the language, the only mainstream language that supports this feature is C++, although several novel languages, like Haskell and Rust, support it too. This is claimed to account for much of its speed advantage over managed languages, such as Java, in abstracted code.</p>
+
+<p>Because of this, I was disappointed when it turned out that I have to write my supposed-to-be-fast alpha-beta implementation in C for my software project in a generic manner, which would seemingly require a virtual call every node and probably an allocation (because different boards have different sizes).</p>
+
+<p>I thought about this problem and I think I found a solution. Before presenting it, I would like to describe a few quite-common C preprocessor tricks.</p>
+
+<h3 id="trick-1--foreach-in-c">Trick 1 – foreach in C:</h3>
+
+<p>This is a quite old trick that can be used to implement foreach in C – the oldest use I found is in BSD’s <code class="language-plaintext highlighter-rouge">queue.h</code></p>
+
+<p>I think the best way to introduce it is by example – which iterates over a list-style linked list.</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#include &lt;stdio.h&gt;
+</span>
+<span class="k">struct</span> <span class="n">cons</span> <span class="p">{</span>
+  <span class="kt">void</span> <span class="o">*</span> <span class="n">car</span><span class="p">;</span>
+  <span class="k">struct</span> <span class="n">cons</span> <span class="o">*</span> <span class="n">cdr</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="c1">// C99 trick - the struct is freed at the end of the</span>
+<span class="c1">//   containing block.</span>
+<span class="c1">// NOTE: in C++, it's freed at the end of the containing</span>
+<span class="c1">//   STATEMENT - which still works here.</span>
+<span class="cp">#define CONS(car, cdr) (&amp;(struct cons){(car), (cdr)})
+</span>
+<span class="cp">#define FOREACH_CONS(cur, name) \
+  for(cur = (name); cur; cur = cur-&gt;cdr)
+</span>
+<span class="c1">// Assumes l is a list of nul-terminated strings and print them</span>
+<span class="c1">//   concatenated</span>
+<span class="kt">void</span> <span class="nf">print_all_members</span><span class="p">(</span><span class="k">struct</span> <span class="n">cons</span> <span class="o">*</span> <span class="n">l</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">struct</span> <span class="n">cons</span> <span class="o">*</span> <span class="n">cur</span><span class="p">;</span>
+  <span class="n">FOREACH_CONS</span><span class="p">(</span><span class="n">cur</span><span class="p">,</span> <span class="n">l</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"%s"</span><span class="p">,</span> <span class="p">(</span><span class="kt">char</span><span class="o">*</span><span class="p">)</span> <span class="n">cur</span><span class="o">-&gt;</span><span class="n">car</span><span class="p">);</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">()</span> <span class="p">{</span>
+   <span class="n">print_all_members</span><span class="p">(</span><span class="n">CONS</span><span class="p">(</span><span class="s">"Hello"</span><span class="p">,</span> <span class="n">CONS</span><span class="p">(</span><span class="s">", "</span><span class="p">,</span>
+                     <span class="n">CONS</span><span class="p">(</span><span class="s">"World!"</span><span class="p">,</span> <span class="n">CONS</span><span class="p">(</span><span class="s">"</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="mi">0</span><span class="p">)))));</span>
+   <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Here, the user provides a variable of the appropriate type as cur, and name should hold the input list and the macro does the rest.</p>
+
+<h3 id="trick-2--higher-order-macros">Trick 2 – higher order macros:</h3>
+
+<p>If you pass the name of a functional macro to a C preprocessor macro, the last macro can pass it’s own parameters.</p>
+
+<p>So:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#include &lt;stdio.h&gt;
+</span>
+<span class="cp">#define HIGHER_ORDER(u) do { u(1+5,8+1); } while(0)
+#define MULT(a,b) printf("%d\n", a*b)
+</span>
+<span class="kt">int</span> <span class="nf">main</span><span class="p">()</span> <span class="p">{</span>
+  <span class="c1">// This expands to do { MULT(1+5,8+1); } while(0)</span>
+  <span class="c1">// Which expands to do { printf("%d\n", 1+5*8+1); } while(0)</span>
+  <span class="n">HIGHER_ORDER</span><span class="p">(</span><span class="n">MULT</span><span class="p">);</span>
+  <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span></code></pre></figure>
+
+<p>Prints 42.</p>
+
+<p>Now for the negamax implementation:</p>
+
+<p>Textbook negamax/alpha-beta looks like this (credit: Wikipedia):</p>
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>function pvs(node, depth, α, β, color)
+    if node is a terminal node or depth = 0
+        return color × the heuristic value of node
+    for each child of node
+        score := -pvs(child, depth-1, -β, -α, -color)
+        α := max(α, score)
+        if α ≥ β
+            break (* beta cut-off *)
+    return α
+</code></pre></div></div>
+
+<p>If your game implementation keeps the board internally, and cloning boards does not require allocations, you can implement FOREACH_CHILD in the following manner:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="k">struct</span> <span class="n">my_game</span> <span class="p">{</span>
+  <span class="kt">char</span> <span class="n">board</span><span class="p">[</span><span class="n">WIDTH</span><span class="p">][</span><span class="n">HEIGHT</span><span class="p">];</span>
+<span class="p">};</span>
+
+<span class="c1">// assume implemented</span>
+<span class="kt">int</span> <span class="nf">my_eval_game</span><span class="p">(</span><span class="k">struct</span> <span class="n">my_game</span> <span class="k">const</span> <span class="o">*</span><span class="p">);</span>
+<span class="k">struct</span> <span class="n">my_game</span> <span class="nf">make_move</span><span class="p">(</span><span class="k">struct</span> <span class="n">my_game</span> <span class="k">const</span> <span class="o">*</span><span class="p">,</span> <span class="k">struct</span> <span class="n">move</span><span class="p">);</span>
+<span class="c1">// Standard iterator methods - assumes a sentinel move for</span>
+<span class="c1">//   which is_move_valid returns false</span>
+<span class="k">struct</span> <span class="n">move</span> <span class="nf">my_first_move</span><span class="p">(</span><span class="k">struct</span> <span class="n">my_game</span> <span class="k">const</span> <span class="o">*</span><span class="p">);</span>
+<span class="k">struct</span> <span class="n">move</span> <span class="nf">my_next_move</span><span class="p">(</span><span class="k">struct</span> <span class="n">my_game</span> <span class="k">const</span> <span class="o">*</span><span class="p">,</span>
+    <span class="k">struct</span> <span class="n">move</span> <span class="n">cur</span><span class="p">);</span>
+<span class="n">bool</span> <span class="nf">is_my_move_valid</span><span class="p">(</span><span class="k">struct</span> <span class="n">move</span><span class="p">);</span>
+
+<span class="cp">#define MY_FOREACH_CHILD(CUR, GAME)                           \
+  for(struct move _foreach_child_cur = my_first_move(GAME);   \
+      is_my_move_valid(GAME, _foreach_child_cur) &amp;&amp;           \
+      (CUR = my_make_move(GAME, _foreach_child_cur), 1);      \
+      _foreach_child_cur = my_next_move(GAME,                 \
+                                        _foreach_child_cur))</span></code></pre></figure>
+
+<p>You can implement alpha-beta by basically copying from the textbook (in a separate header), like this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="cp">#define ALPHABETA_IMPL(SELF, NODE, FOREACH_CHILD, EVAL_GAME) \
+static int SELF(NODE *node, int depth, int alpha,            \
+    int beta, int color) {                                   \
+  if(depth == 0) return EVAL_GAME(node) * color;             \
+  int score = INT_MIN;                                       \
+  NODE cur;                                                  \
+                                                             \
+  FOREACH_CHILD(cur, node) {                                 \
+    score = -SELF(&amp;cur, depth-1, -beta, -alpha, -color);     \
+    if(alpha &lt; score) alpha = score;                         \
+    if(alpha &gt;= beta) break;                                 \
+  }                                                          \
+                                                             \
+    </span><span class="cm">/* return objective score if no moves were possible */</span><span class="cp">   \
+  return score == INT_MIN ? EVAL_GAME(node) * color : alpha; \
+}</span></code></pre></figure>
+
+<p>Note that I use INT_MIN as a sentinel score to avoid needing to check if moves were made. Then it can be used like this:</p>
+
+<figure class="highlight"><pre><code class="language-c" data-lang="c"><span class="n">ALPHABETA_IMPL</span><span class="p">(</span><span class="n">my_minmax</span><span class="p">,</span> <span class="k">struct</span> <span class="n">my_game</span><span class="p">,</span> <span class="n">FOREACH_CHILD_MYGAME</span><span class="p">,</span>
+  <span class="n">my_eval_game</span><span class="p">)</span></code></pre></figure>
+
+<p>Which I think is quite elegant, actually.</p>
+
+<p>Next: how I am planning to implement virtual calls.</p>
+
+  </div><a class="u-url" href="/blog/update/2014/03/17/hom-mono.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/blog/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Ariel Ben-Yehuda&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Ariel Ben-Yehuda&#39;s blog</li><li><a class="u-email" href="mailto:ariel.byd@gmail.com">ariel.byd@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/arielb1"><svg class="svg-icon"><use xlink:href="/blog/assets/minima-social-icons.svg#github"></use></svg> <span class="username">arielb1</span></a></li><li><a href="https://www.twitter.com/ArielBenYehuda"><svg class="svg-icon"><use xlink:href="/blog/assets/minima-social-icons.svg#twitter"></use></svg> <span class="username">ArielBenYehuda</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>Random observations on programming, mathematics, and what&#39;s between them.</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
