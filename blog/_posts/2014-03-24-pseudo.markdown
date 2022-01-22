@@ -1,0 +1,65 @@
+---
+layout: post
+title:  "On Pseudorandomness"
+date:   2014-03-24 20:13:36 +0200
+categories: update
+---
+
+It has been said many times that the easiest way to break a crypto-system is by breaking its random-number generator. This seems to have a basis in practice – the PS3[1] and Debian[2] are only 2 of the most famous serious flaws caused by one. An important cause for this is that the PRNG (for obvious reasons) aren’t really visible on the wire or in other places. Another important cause is that PRNGs are used to perform several different but related tasks in a confusing way that isn’t really documented anywhere.
+
+I can’t do anything to help the former problem, but I’ll try to explain the latter.
+
+I will use PRNGs to refer to both the cryptographically-secure ones and the non-cryptographically-secure ones together (rather then calling the cryptographically-secure ones CSPRNGs). This is because “cryptographic-security” is only one of the axes that make a PRNG useful (or secure) for a purpose.
+
+Almost always, one prefers programs to be deterministic (if only because that makes debugging much easier). To help it, CPUs are typically written to behave in a highly deterministic manner (except when one uses shared-memory parallelism, but that’s a problem for another post). However, sometimes, this property can be sometimes a problem. A few cases when this occurs are:
+
+1. Some algorithm works properly in the average case, but displays bad behaviour in the worst case, which is triggered either by being similar-in-structure to the program (as in quicksort on a sorted list) or by input intentionally crafted by an adversary (as in Hash-Table DoS[3]). Note that in some cases, typically when a program does some kind of Monte-Carlo simulation (i.e. estimates a distribution by sampling, e.g. fuzzing), it can return wrong results rather than just taking a long time to finish.
+2. Often, one needs to generate unique identifiers for some purpose and does not care if the length is overly long. Cryptographic systems often require this to avoid replay attacks (another confusing thing that I am going to write a post about) and keymat-reuse issues (sometimes called many-time-pads).
+3. One needs to generate a secret key that cannot be predicted by an adversary, perhaps even for a long amount of time – decades, in a few cases. (e.g. all crypto stuff – short-term authentication cookies to a browser game, long-term keys protecting Top Secret documents, and everything between them).
+4. Stream Ciphers – if a completely pseudorandom stream is xorred with a secret, the secret can be recovered from the result only by these knowing the stream. This provides a fast, securely-implementable form of encryption.
+
+ 
+
+There are probably more uses, but these are the most common.
+
+ 
+
+It seems that there are four properties of PRNGs that are used in the application:
+
+ 
+
+1. Weak Unpredictability – Adversaries can’t predict the PRNG’s output. However, the set of outputs may still be relatively small so a brute-force attack may be possible. This is quite similar to strong unpredictability detailed below.
+2. Strong Unpredictability – Adversaries can’t predict the PRNG’s output or iterate over all possibilities. For practical reasons (e.g. backups), this is often divided into short-term and long-term unpredictability, where long-term secrets shouldn’t be stored in the clear on non-specially-protected devices. An annoying problem with this property is that a backdoor can make a PRNG predictable to these in the know while being random to everybody else – making checking for it impossible – and that is the classic failure mode of this property.
+3. Uniqueness – The results are distinct in different runs. This is distinct from unpredictability – generating a single stream with a PRNG from a secret seed but not saving the current position when the system reboots, from example, can destroy Uniqueness while preserving Unpredictability. The classic failure mode is a guard asking the same challenge and accepting the same response every day – allowing eavesdroppers to simply repeat it.
+4. Whiteness – The stream does not have visible internal correlations. This is the property typically checked by “randomness tests” (e.g. Diehard) and often confused with Pseudorandomness. This can be further divided into Classical Whiteness – the absence of obvious patterns, and Cryptographic Whiteness – which requires the absence of all computably-discoverable patterns, which is important in e.g. stream ciphers. The classic failure mode is a subtle internal bias – slowly leaking a secret over multiple ciphertexts.
+
+ 
+
+These properties can be combined in various ways – a stream, for example, can be Unpredictable and Unique, both not Unpredictably Unique, for example when a professor generates an exam by randomly selecting a few questions from a relatively small and constant set. Concatenating streams creates a stream that has the union of the properties of the substreams, but not together.
+
+ 
+
+Preventing worst-cases typically requires a small amount of (Classical) Whiteness that in adversarial scenarios is Weakly Unpredictable (of course, if one leaks the randomness via the algorithm results, then ze needs not to reuse it). Note that CBC nonce problems[4] basically require this.
+
+Unique Identifers and replay prevention (of course) require Uniqueness and only Uniqueness.
+
+Secret Keys require Unpredictability, and often also require Uniqueness.
+
+Stream Ciphers require all 3 together – Unpredictably Uniquely White data.
+
+ 
+
+Clocks and Counters provide Uniqueness, but not Unpredictability.
+
+Hash Functions typically take a stream, combine its properties and add Whiteness – so `H(secret||ctr++)` has all 3 properties together – the secret gives Unpredictability, the counter gives Uniqueness, and the hash combines them and gives Whiteness. However, hash functions don’t generate Unpredictability or Uniqueness – `H(current-time)` is quite predictable and H(secret) isn’t unique.
+
+Hardware RNGs often provide Unique Unpredictability, but often not Whiteness.
+
+ 
+
+[1]: http://events.ccc.de/congress/2010/Fahrplan/attachments/1780_27c3_console_hacking_2010.pdf
+[2]: http://lwn.net/Articles/282038/
+
+[3]: http://events.ccc.de/congress/2011/Fahrplan/attachments/2007_28C3_Effective_DoS_on_web_application_platforms.pdf
+
+[4]: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.61.5887&rep=rep1&type=pdf

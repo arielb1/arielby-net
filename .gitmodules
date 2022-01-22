@@ -1,3 +1,0 @@
-[submodule "my-blog/themes/terminal"]
-	path = my-blog/themes/terminal
-	url = https://github.com/panr/hugo-theme-terminal.git

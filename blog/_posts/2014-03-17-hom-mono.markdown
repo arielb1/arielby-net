@@ -1,0 +1,157 @@
+---
+layout: post
+title:  "Using Higher-Order Macros in C to implement Monomorphisation"
+date:   2014-03-17 20:13:36 +0200
+categories: update
+---
+
+One of C++s most-often-cited advantages (over any language) is it ability to monomorphise abstracted calls via templates – to reuse code without the overhead of indirection and virtual method calls.
+
+As a part of the language, the only mainstream language that supports this feature is C++, although several novel languages, like Haskell and Rust, support it too. This is claimed to account for much of its speed advantage over managed languages, such as Java, in abstracted code.
+ 
+
+Because of this, I was disappointed when it turned out that I have to write my supposed-to-be-fast alpha-beta implementation in C for my software project in a generic manner, which would seemingly require a virtual call every node and probably an allocation (because different boards have different sizes).
+
+I thought about this problem and I think I found a solution. Before presenting it, I would like to describe a few quite-common C preprocessor tricks.
+
+ 
+### Trick 1 – foreach in C:
+
+This is a quite old trick that can be used to implement foreach in C – the oldest use I found is in BSD’s `queue.h`
+
+I think the best way to introduce it is by example – which iterates over a list-style linked list.
+
+{% highlight C %}
+#include <stdio.h>
+
+struct cons {
+  void * car;
+  struct cons * cdr;
+};
+
+// C99 trick - the struct is freed at the end of the
+//   containing block.
+// NOTE: in C++, it's freed at the end of the containing
+//   STATEMENT - which still works here.
+#define CONS(car, cdr) (&(struct cons){(car), (cdr)})
+
+#define FOREACH_CONS(cur, name) \
+  for(cur = (name); cur; cur = cur->cdr)
+
+// Assumes l is a list of nul-terminated strings and print them
+//   concatenated
+void print_all_members(struct cons * l) {
+  struct cons * cur;
+  FOREACH_CONS(cur, l) {
+    printf("%s", (char*) cur->car);
+  }
+}
+
+int main() {
+   print_all_members(CONS("Hello", CONS(", ",
+                     CONS("World!", CONS("\n", 0)))));
+   return 0;
+}
+{% endhighlight %}
+
+Here, the user provides a variable of the appropriate type as cur, and name should hold the input list and the macro does the rest.
+ 
+
+### Trick 2 – higher order macros:
+
+If you pass the name of a functional macro to a C preprocessor macro, the last macro can pass it’s own parameters.
+
+So:
+
+{% highlight C %}
+#include <stdio.h>
+
+#define HIGHER_ORDER(u) do { u(1+5,8+1); } while(0)
+#define MULT(a,b) printf("%d\n", a*b)
+
+int main() {
+  // This expands to do { MULT(1+5,8+1); } while(0)
+  // Which expands to do { printf("%d\n", 1+5*8+1); } while(0)
+  HIGHER_ORDER(MULT);
+  return 0;
+}
+{% endhighlight %}
+
+Prints 42.
+
+ 
+
+Now for the negamax implementation:
+
+Textbook negamax/alpha-beta looks like this (credit: Wikipedia):
+```
+function pvs(node, depth, α, β, color)
+    if node is a terminal node or depth = 0
+        return color × the heuristic value of node
+    for each child of node
+        score := -pvs(child, depth-1, -β, -α, -color)
+        α := max(α, score)
+        if α ≥ β
+            break (* beta cut-off *)
+    return α
+```
+ 
+
+If your game implementation keeps the board internally, and cloning boards does not require allocations, you can implement FOREACH_CHILD in the following manner:
+
+{% highlight C %}
+struct my_game {
+  char board[WIDTH][HEIGHT];
+};
+
+// assume implemented
+int my_eval_game(struct my_game const *);
+struct my_game make_move(struct my_game const *, struct move);
+// Standard iterator methods - assumes a sentinel move for
+//   which is_move_valid returns false
+struct move my_first_move(struct my_game const *);
+struct move my_next_move(struct my_game const *,
+    struct move cur);
+bool is_my_move_valid(struct move);
+
+#define MY_FOREACH_CHILD(CUR, GAME)                           \
+  for(struct move _foreach_child_cur = my_first_move(GAME);   \
+      is_my_move_valid(GAME, _foreach_child_cur) &&           \
+      (CUR = my_make_move(GAME, _foreach_child_cur), 1);      \
+      _foreach_child_cur = my_next_move(GAME,                 \
+                                        _foreach_child_cur))
+{% endhighlight %}
+
+You can implement alpha-beta by basically copying from the textbook (in a separate header), like this:
+
+{% highlight C %}
+#define ALPHABETA_IMPL(SELF, NODE, FOREACH_CHILD, EVAL_GAME) \
+static int SELF(NODE *node, int depth, int alpha,            \
+    int beta, int color) {                                   \
+  if(depth == 0) return EVAL_GAME(node) * color;             \
+  int score = INT_MIN;                                       \
+  NODE cur;                                                  \
+                                                             \
+  FOREACH_CHILD(cur, node) {                                 \
+    score = -SELF(&cur, depth-1, -beta, -alpha, -color);     \
+    if(alpha < score) alpha = score;                         \
+    if(alpha >= beta) break;                                 \
+  }                                                          \
+                                                             \
+    /* return objective score if no moves were possible */   \
+  return score == INT_MIN ? EVAL_GAME(node) * color : alpha; \
+}
+{% endhighlight %}
+
+Note that I use INT_MIN as a sentinel score to avoid needing to check if moves were made. Then it can be used like this:
+
+{% highlight C %}
+ALPHABETA_IMPL(my_minmax, struct my_game, FOREACH_CHILD_MYGAME,
+  my_eval_game)
+{% endhighlight %}
+
+Which I think is quite elegant, actually.
+
+ 
+
+Next: how I am planning to implement virtual calls.
